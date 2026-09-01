@@ -3,10 +3,13 @@ set_global_assignment -name VHDL_INPUT_VERSION VHDL_2008
 set_global_assignment -name SYSTEMVERILOG_FILE Arcade-BluePrint.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/BluePrint.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/BluePrint_CPU.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/BluePrint_SND.sv
-set_global_assignment -name VERILOG_FILE rtl/pause.v
-set_global_assignment -name VERILOG_FILE rtl/hiscore.v
-set_global_assignment -name VERILOG_FILE rtl/jtframe_frac_cen.v
+set_global_assignment -name VERILOG_FILE rtl/mister_custom/pause.v
+set_global_assignment -name VERILOG_FILE rtl/mister_custom/hiscore.v
+set_global_assignment -name VERILOG_FILE rtl/pll/jtframe_frac_cen.v
+
 set_global_assignment -name QIP_FILE rtl/cpu/bp_cpu.qip
+
 set_global_assignment -name QIP_FILE rtl/sound/bp_sound.qip
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/BluePrint_SND.sv
+
 set_global_assignment -name QIP_FILE rtl/ram_rom/bp_ram_rom.qip
