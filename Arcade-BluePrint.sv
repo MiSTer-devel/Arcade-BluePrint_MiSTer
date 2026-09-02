@@ -73,6 +73,7 @@ localparam CONF_STR = {
 	"P1ODE,Aspect Ratio,Original,Full screen,[ARC1],[ARC2];",
 	"P1OC,Orientation,Vert,Horz;",
 	"P1OB,HDMI Flip,Off,On;",
+	"P1OM,CRT Flip,Off,On;",
 	"P1OFH,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
 	"-;",
 	"H1OR,Autosave Hiscores,Off,On;",
@@ -328,6 +329,7 @@ BluePrint BP_inst
 
 	.dip_sw({dip_sw[1], dip_sw[0]}),
 
+	.crt_flip(status[22]),
 	.h_center(status[6:3]),
 	.v_center(status[10:7]),
 

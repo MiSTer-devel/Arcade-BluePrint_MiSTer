@@ -44,6 +44,9 @@ module BluePrint
 	// Audio output
 	output signed [15:0] sound,
 
+	// OSD 180 degree flip, composed with the game's MASTER FLIP
+	input                crt_flip,
+
 	// Screen centering
 	input          [3:0] h_center, v_center,
 
@@ -124,6 +127,7 @@ BluePrint_CPU main_pcb
 	.sound_cmd(sound_cmd),
 	.sound_cmd_wr(sound_cmd_wr),
 
+	.crt_flip(crt_flip),
 	.h_center(h_center),
 	.v_center(v_center),
 

@@ -45,6 +45,9 @@ module BluePrint_CPU
 	output  [7:0] sound_cmd,
 	output        sound_cmd_wr,
 
+	// OSD 180 degree flip, composed with the game's MASTER FLIP
+	input         crt_flip,
+
 	// Screen centering
 	input   [3:0] h_center, v_center,
 
@@ -288,6 +291,11 @@ always_ff @(posedge clk_40m) begin
 	end
 end
 
+// MASTER FLIP (J4-34 on real hardware): one global signal, XORed into the
+// scan counters and the per-object flip bits. The cocktail register and the
+// OSD toggle compose, so two flips cancel back to upright.
+wire master_flip = flip ^ crt_flip;
+
 // Sound command (0xD000 write)
 reg [7:0] snd_cmd_reg = 8'd0;
 reg snd_cmd_wr_reg = 1'b0;
@@ -337,9 +345,31 @@ reg [6:0] pipe_color;                // Pre-fetched color byte
 reg       pipe_priority;             // Pre-fetched priority bit
 reg [2:0] pipe_fine_y;              // Fine Y for ROM address
 
+// Tile pixels leave the shifter MSB-first, so a flipped column loads reversed.
+wire [7:0] pipe_tile0_rev = {pipe_tile0[0], pipe_tile0[1], pipe_tile0[2], pipe_tile0[3],
+                             pipe_tile0[4], pipe_tile0[5], pipe_tile0[6], pipe_tile0[7]};
+wire [7:0] pipe_tile1_rev = {pipe_tile1[0], pipe_tile1[1], pipe_tile1[2], pipe_tile1[3],
+                             pipe_tile1[4], pipe_tile1[5], pipe_tile1[6], pipe_tile1[7]};
+
 wire [4:0] screen_col  = h_cnt[7:3];
 wire [2:0] fine_x      = h_cnt[2:0];
 wire [7:0] screen_y    = v_cnt[7:0];
+
+// MASTER FLIP inverts the counters that generate addresses. fine_x stays raw:
+// it is the fetch schedule, not an address. Both visible spans are symmetric
+// about 127.5 (cols 0-31, lines 16-239), so a bare inversion maps each range
+// onto itself with no offset. Reversing the fetch order is also what makes the
+// previous-column bank bit read the other neighbour, exactly as the board does.
+// Flip mirror-centre corrections. Each layer carries its own fixed offset
+// between the raster counter and the pixels it puts on screen, and mirroring
+// doubles that offset into a visible error. Both measured on hardware.
+// The two knobs act in OPPOSITE directions: FLIP_COL_ADJ subtracts from a fetch
+// address, FLIP_SPR_ADJ from a write position. Raising FLIP_COL_ADJ moves tiles
+// one way on screen, raising FLIP_SPR_ADJ moves sprites the other.
+localparam [4:0] FLIP_COL_ADJ = 5'd3;    // tilemap, in tile columns (24px)
+localparam [7:0] FLIP_SPR_ADJ = 8'd12;   // sprites, in pixels
+wire [4:0] eff_col = master_flip ? ((~screen_col) - FLIP_COL_ADJ) : screen_col;
+wire [7:0] eff_y   = master_flip ? ~screen_y   : screen_y;
 wire visible_line = (v_cnt >= 9'd16) && (v_cnt < 9'd240);
 
 always_ff @(posedge clk_40m) begin
@@ -367,20 +397,20 @@ always_ff @(posedge clk_40m) begin
 				// fine_x=0: Transfer pipe to shift registers.
 				//           Begin fetch for current column.
 				3'd0: begin
-					tile_shift0         <= pipe_tile0;
-					tile_shift1         <= pipe_tile1;
+					tile_shift0         <= master_flip ? pipe_tile0_rev : pipe_tile0;
+					tile_shift1         <= master_flip ? pipe_tile1_rev : pipe_tile1;
 					tile_color_latch    <= pipe_color;
 					tile_priority_latch <= pipe_priority;
-					latched_col         <= screen_col;
+					latched_col         <= eff_col;
 					// scroll_ram[(30 - scr_col) & 0xFF]
-					scroll_render_addr  <= 8'd30 - {3'd0, screen_col};
+					scroll_render_addr  <= 8'd30 - {3'd0, eff_col};
 				end
 
 				// fine_x=1: Scroll data ready. Compute scrolled Y, set VRAM/CRAM addr.
 				3'd1: begin
 					begin
 						reg [7:0] scrolled_y;
-						scrolled_y       = screen_y + scroll_render_D;
+						scrolled_y       = eff_y + scroll_render_D;
 						pipe_fine_y      <= scrolled_y[2:0];
 						// TILEMAP_SCAN_COLS_FLIP_X: VRAM col 0 = rightmost screen col (31)
 						vram_render_addr <= {(5'd30 - latched_col), scrolled_y[7:3]};  // Test Change From 5'd31
@@ -549,12 +579,14 @@ always_ff @(posedge clk_40m) begin
 				begin
 					reg [8:0] raw_line;
 					// line_in_sprite = next_scanline - (sy - 1) = next_scanline - 239 + byte0
-					raw_line = {1'b0, next_scanline} - 9'd239 + {1'b0, spr_byte0};
+					// MASTER FLIP: sy = 240 - sy, so the subtrahend becomes byte0 - 1
+					raw_line = master_flip ? ({1'b0, next_scanline} - {1'b0, spr_byte0} + 9'd1)
+					                       : ({1'b0, next_scanline} - 9'd239 + {1'b0, spr_byte0});
 					if (raw_line[8] || raw_line[7:4] != 4'd0) begin
 						spr_state <= SPR_NEXT; // not on this scanline
 					end else begin
 						reg [3:0] line_in_sprite;
-						line_in_sprite  = spr_flipy ? (4'd15 - raw_line[3:0]) : raw_line[3:0];
+						line_in_sprite  = (spr_flipy ^ master_flip) ? (4'd15 - raw_line[3:0]) : raw_line[3:0];
 						spr_render_addr <= {spr_byte1, line_in_sprite};
 						spr_state       <= SPR_ROMWAIT;
 					end
@@ -578,10 +610,13 @@ always_ff @(posedge clk_40m) begin
 					reg [2:0] bit_pos;
 					reg [2:0] pixel_val;
 					reg [7:0] x_pos;
+					reg [7:0] x_base;
 					// flipX: bit0 first (pixel 0 = LSB); normal: bit7 first (pixel 0 = MSB)
-					bit_pos   = spr_byte2[6] ? spr_pix_cnt : (3'd7 - spr_pix_cnt);
+					bit_pos   = (spr_byte2[6] ^ master_flip) ? spr_pix_cnt : (3'd7 - spr_pix_cnt);
 					pixel_val = {spr_rom_g_lat[bit_pos], spr_rom_b_lat[bit_pos], spr_rom_r_lat[bit_pos]};
-					x_pos     = spr_byte3 + {5'd0, spr_pix_cnt} + 8'd0;  // + 8'd2
+					// MASTER FLIP: sx = 248 - sx
+					x_base    = master_flip ? (8'd248 - spr_byte3 - FLIP_SPR_ADJ) : spr_byte3;
+					x_pos     = x_base + {5'd0, spr_pix_cnt} + 8'd0;  // + 8'd2
 					if (pixel_val != 3'd0) begin
 						if (~linebuf_sel)
 							linebuf1[x_pos] <= pixel_val;
