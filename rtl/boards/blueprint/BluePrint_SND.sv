@@ -27,22 +27,19 @@ module BluePrint_SND
 (
 	input                reset,
 	input				 pause,
-	input                clk_40m,         // 40 MHz master
+	input                clk_40m,
 
-	// Sound command interface from main CPU
-	input          [7:0] sound_cmd,       // Sound command byte from main CPU latch
-	input                sound_cmd_wr,    // Pulse: main CPU wrote to 0xD000
+	input          [7:0] sound_cmd,
+	input                sound_cmd_wr,
 
 	input         [15:0] dip_sw,          // [7:0] = bank 1, [15:8] = bank 2
 
-	output         [7:0] dipsw_readback,  // Value main CPU reads at 0xC003
+	output         [7:0] dipsw_readback,
 
 	output signed [15:0] sound,
 
 	input                vblank,
 
-
-	// shared Z80 (pool slot z80_1) and AY-3-8910s (pool slots ay_0 / ay_1), rtl/blueprint_dispatcher.sv
 	output chip_pool_pkg::z80_i_t  z80_1_i,
 	input  chip_pool_pkg::z80_o_t  z80_1_o,
 	output chip_pool_pkg::ay_i_t   ay_0_i,
@@ -50,18 +47,13 @@ module BluePrint_SND
 	output chip_pool_pkg::ay_i_t   ay_1_i,
 	input  chip_pool_pkg::ayio_o_t ay_1_o,
 
-	// shared ROM blocks (read ports)
 	output        [11:0] rom_snd_a,
 	input          [7:0] rom1_D, rom2_D,
 
-	// board RAM pool block 5: sound RAM
 	output ram_pool_pkg::pram_i_t pr_i,
 	input  ram_pool_pkg::pram_o_t pr_o
 );
 
-//------------------------------------------------------- Clock division -------------------------------------------------------//
-
-// 1.25 MHz (sound Z80, AY1) and 0.625 MHz (AY2) = 40 / 32 and / 64 (10 MHz XTAL / 8 and / 16)
 wire cen_1m25, cen_0m625;
 jtframe_frac_cen #(2) sound_cen
 (
@@ -71,16 +63,12 @@ jtframe_frac_cen #(2) sound_cen
 	.cen({cen_0m625, cen_1m25})
 );
 
-// DC removal filter clock
 reg [8:0] div = 9'd0;
 always_ff @(posedge clk_40m) begin
 	div <= div + 9'd1;
 end
 wire cen_dcrm = !div;
 
-//------------------------------------------------------------ CPU -------------------------------------------------------------//
-
-// Z80 bus (pool slot z80_1)
 wire [15:0] sound_A;
 wire [7:0] sound_Dout;
 wire n_m1, n_mreq, n_iorq, n_rd, n_wr, n_rfsh;
@@ -93,36 +81,25 @@ assign n_rd       = z80_1_o.rd_n;
 assign n_wr       = z80_1_o.wr_n;
 assign n_rfsh     = z80_1_o.rfsh_n;
 
-// Address decoding for Z80
-// ROM1: 0x0000-0x1FFF (A[15:13] = 000)
 wire cs_rom1 = ~n_mreq & n_rfsh & ~sound_A[15] & ~sound_A[14] & ~sound_A[13];
-// ROM2: 0x2000-0x3FFF (A[15:13] = 001)
 wire cs_rom2 = ~n_mreq & n_rfsh & ~sound_A[15] & ~sound_A[14] &  sound_A[13];
-// RAM:  0x4000-0x5FFF (A[15:13] = 010)
 wire cs_ram  = ~n_mreq & n_rfsh & ~sound_A[15] &  sound_A[14] & ~sound_A[13];
-// AY1:  0x6000-0x7FFF (A[15:13] = 011)
 wire cs_ay1_w = ~n_mreq & n_rfsh & ~sound_A[15] & sound_A[14] & sound_A[13] & ~n_wr;
 wire cs_ay1_r = ~n_mreq & n_rfsh & ~sound_A[15] & sound_A[14] & sound_A[13] & ~n_rd;
-// AY2:  0x8000-0x9FFF (A[15:13] = 100)
 wire cs_ay2_w = ~n_mreq & n_rfsh &  sound_A[15] & ~sound_A[14] & ~sound_A[13] & ~n_wr;
 wire cs_ay2_r = ~n_mreq & n_rfsh &  sound_A[15] & ~sound_A[14] & ~sound_A[13] & ~n_rd;
 
-// AY bus control signals
-// AY1: 0x6000 / 0x6001 address / data write, 0x6002 read
-wire ay1_bdir = cs_ay1_w & (sound_A[1:0] != 2'b10); // write to 0x6000 or 0x6001
-wire ay1_bc1  = (cs_ay1_w & ~sound_A[0] & ~sound_A[1]) | // address select: write to 0x6000
-                (cs_ay1_r & sound_A[1]);                   // data read: read from 0x6002
+wire ay1_bdir = cs_ay1_w & (sound_A[1:0] != 2'b10);
+wire ay1_bc1  = (cs_ay1_w & ~sound_A[0] & ~sound_A[1]) |
+                (cs_ay1_r & sound_A[1]);
 
-// AY2: 0x8000 / 0x8001 address / data write, 0x8002 read
 wire ay2_bdir = cs_ay2_w & (sound_A[1:0] != 2'b10);
 wire ay2_bc1  = (cs_ay2_w & ~sound_A[0] & ~sound_A[1]) |
                 (cs_ay2_r & sound_A[1]);
 
-// Data reading flags for mux
 wire ay1_reading = ~ay1_bdir & ay1_bc1;
 wire ay2_reading = ~ay2_bdir & ay2_bc1;
 
-// Multiplex data input to Z80
 wire [7:0] sound_Din = cs_rom1           ? rom1_D :
                        cs_rom2           ? rom2_D :
                        (cs_ram & n_wr)   ? sndram_D :
@@ -130,28 +107,17 @@ wire [7:0] sound_Din = cs_rom1           ? rom1_D :
                        ay2_reading       ? ay2_D :
                        8'hFF;
 
-//-------------------------------------------------------------- ROMs ----------------------------------------------------------//
-
-// Sound ROM 1 (0x0000-0x0FFF, mirrored at 0x1000-0x1FFF)
 assign rom_snd_a = sound_A[11:0];
 
-// Sound ROM 2 (0x2000-0x2FFF, mirrored at 0x3000-0x3FFF)
-
-//-------------------------------------------------------------- RAM -----------------------------------------------------------//
-
-// sound RAM 1KB at 0x4000-0x43FF (pool block 5)
 wire [7:0] sndram_D;
-assign pr_i.a_addr = 15'(sound_A[9:0]);
+assign pr_i.a_addr = 16'(sound_A[9:0]);
 assign pr_i.a_d    = sound_Dout;
 assign pr_i.a_we   = cs_ram & ~n_wr;
-assign pr_i.b_addr = 15'd0;
+assign pr_i.b_addr = 16'd0;
 assign pr_i.b_d    = 8'd0;
 assign pr_i.b_we   = 1'b0;
 assign sndram_D    = pr_o.a_q;
 
-//--------------------------------------------------------- Interrupts ---------------------------------------------------------//
-
-// 240 Hz IRQ (4 per frame): 1.25 MHz / 5208
 reg [12:0] irq_cnt = 13'd0;
 reg irq_pulse = 1'b0;
 always_ff @(posedge clk_40m) begin
@@ -167,7 +133,6 @@ always_ff @(posedge clk_40m) begin
 		irq_pulse <= 1'b0;
 end
 
-// IRQ latch - cleared by interrupt acknowledge
 wire irq_clr = (~reset | ~(n_iorq | n_m1));
 reg n_irq = 1'b1;
 always_ff @(posedge clk_40m or posedge irq_clr) begin
@@ -177,22 +142,16 @@ always_ff @(posedge clk_40m or posedge irq_clr) begin
 		n_irq <= 1'b0;
 end
 
-// NMI generation - pulse triggered by main CPU writing to 0xD000
 reg n_nmi = 1'b1;
 reg sound_cmd_wr_last = 1'b0;
 always_ff @(posedge clk_40m) begin
 	sound_cmd_wr_last <= sound_cmd_wr;
 	if (!sound_cmd_wr_last && sound_cmd_wr)
-		n_nmi <= 1'b0;  // Assert NMI on rising edge of write
+		n_nmi <= 1'b0;
 	else if (cen_1m25)
-		n_nmi <= 1'b1;  // Release after one CPU cycle
+		n_nmi <= 1'b1;
 end
 
-//--------------------------------------------------------- Sound chips --------------------------------------------------------//
-
-// Sound chip 1 (AY-3-8910 @ 1.25 MHz - uses JT49 by Jotego)
-// Port A = output: DIP switch data written by sound CPU → main CPU reads at 0xC003
-// Port B = input:  sound command latch from main CPU
 wire [7:0] ay1_D;
 wire [7:0] ay1A_raw, ay1B_raw, ay1C_raw;
 assign ay_0_i.ce     = cen_1m25 & ~pause;
@@ -207,9 +166,6 @@ assign ay1B_raw   = ay_0_o.b;
 assign ay1C_raw   = ay_0_o.c;
 assign dipsw_readback = ay_0_o.ioa_out;
 
-// Sound chip 2 (AY-3-8910 @ 0.625 MHz - HALF RATE - uses JT49 by Jotego)
-// Port A = input: DIP switch bank 1
-// Port B = input: DIP switch bank 2
 wire [7:0] ay2_D;
 wire [7:0] ay2A_raw, ay2B_raw, ay2C_raw;
 assign ay_1_i.ce     = cen_0m625 & ~pause;
@@ -223,9 +179,6 @@ assign ay2A_raw   = ay_1_o.a;
 assign ay2B_raw   = ay_1_o.b;
 assign ay2C_raw   = ay_1_o.c;
 
-//----------------------------------------------------- Final audio output -----------------------------------------------------//
-
-// Apply gain and remove DC offset from AY-3-8910s (uses jt49_dcrm2 from JT49 by Jotego)
 wire signed [15:0] ay1A_dcrm, ay1B_dcrm, ay1C_dcrm, ay2A_dcrm, ay2B_dcrm, ay2C_dcrm;
 jt49_dcrm2 #(16) dcrm_ay1A
 (
@@ -276,11 +229,8 @@ jt49_dcrm2 #(16) dcrm_ay2C
 	.dout(ay2C_dcrm)
 );
 
-// Mix all AY-3-8910 channels (no per-channel filters for Blue Print)
-// Invert phase as the original PCB uses an inverting amplifier prior to the power amp
 assign sound = 16'hFFFF - (ay1A_dcrm + ay1B_dcrm + ay1C_dcrm + ay2A_dcrm + ay2B_dcrm + ay2C_dcrm);
 
-// pool slot z80_1 inputs
 assign z80_1_i.ce    = cen_1m25 & ~pause;
 assign z80_1_i.int_n = n_irq;
 assign z80_1_i.nmi_n = n_nmi;

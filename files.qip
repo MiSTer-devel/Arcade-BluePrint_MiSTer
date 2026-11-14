@@ -15,17 +15,11 @@ set_global_assignment -name VERILOG_FILE rtl/mister_custom/hiscore.v
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mister_custom/controllers.sv
 set_global_assignment -name VERILOG_FILE rtl/pll/jtframe_frac_cen.v
 
-set_global_assignment -name VHDL_FILE rtl/cpu/T80/T80s.vhd
-set_global_assignment -name VHDL_FILE rtl/cpu/T80/T80.vhd
-set_global_assignment -name VHDL_FILE rtl/cpu/T80/T80_ALU.vhd
-set_global_assignment -name VHDL_FILE rtl/cpu/T80/T80_MCode.vhd
-set_global_assignment -name VHDL_FILE rtl/cpu/T80/T80_Pack.vhd
-set_global_assignment -name VHDL_FILE rtl/cpu/T80/T80_Reg.vhd
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rodimus/t80sv/t80sv_all.sv
 
 set_global_assignment -name QIP_FILE rtl/sound/jt49/hdl/jt49.qip
 set_global_assignment -name VERILOG_FILE rtl/sound/jt49/hdl/filter/jt49_dcrm2.v
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/boards/blueprint/BluePrint_SND.sv
 
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/ram_rom/rom_loader.sv
-set_global_assignment -name VHDL_FILE rtl/ram_rom/spram.vhd
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/ram_rom/dpram_dc.sv

@@ -59,11 +59,9 @@ assign LED_POWER = 0;
 assign LED_USER  = ioctl_download;
 assign BUTTONS = 0;
 
-///////////////////////////////////////////////////
-
 wire [1:0] ar = status[14:13];
 
-wire        art_fb;                // artwork framebuffer on HDMI: square canvas pixels
+wire        art_fb;
 wire        art_wait, art_avail;
 wire [11:0] art_cw, art_ch;
 assign VIDEO_ARX = (!ar) ? (art_fb ? art_cw : status[12] ? 12'd4 : 12'd3) : (ar - 1'd1);
@@ -116,8 +114,8 @@ wire        ioctl_upload;
 wire        ioctl_upload_req;
 wire  [7:0] ioctl_index;
 wire        ioctl_wr;
-wire [26:0] ioctl_addr27;                     // hps_io's full address: the artwork download can pass 32 MB
-wire [24:0] ioctl_addr = ioctl_addr27[24:0];  // every other ioctl user
+wire [26:0] ioctl_addr27;
+wire [24:0] ioctl_addr = ioctl_addr27[24:0];
 wire  [7:0] ioctl_dout;
 wire  [7:0] ioctl_din;
 
@@ -156,8 +154,6 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.ps2_key(ps2_key)
 );
 
-////////////////////   CLOCKS   ///////////////////
-
 wire CLK_40M;
 wire locked;
 
@@ -178,7 +174,6 @@ wire        cfg_write;
 wire  [5:0] cfg_address;
 wire [31:0] cfg_data;
 
-// PLL reconfig kept for potential future use
 pll_cfg pll_cfg
 (
 	.mgmt_clk(CLK_50M),
@@ -193,36 +188,30 @@ pll_cfg pll_cfg
 	.reconfig_from_pll(reconfig_from_pll)
 );
 
-// No PLL reconfiguration needed for Blue Print
 assign cfg_write = 0;
 assign cfg_address = 0;
 assign cfg_data = 0;
 
 wire reset = RESET | status[0] | buttons[1];
 
-///////////////////         Keyboard           //////////////////
-
-wire        pause_cpu;   // declared before ctl_keyboard, which takes it
+wire        pause_cpu;
 wire [12:0] kb;
 /* verilator lint_off PINCONNECTEMPTY */
 ctl_keyboard keyboard(.clk(CLK_40M), .ps2_key(ps2_key), .pause(pause_cpu), .kb(kb), .kbx());
 /* verilator lint_on PINCONNECTEMPTY */
-wire btn_up       = kb[0];    // up
-wire btn_down     = kb[1];    // down
-wire btn_left     = kb[2];    // left
-wire btn_right    = kb[3];    // right
-wire btn_fire     = kb[4];    // ctrl
-wire btn_fire2    = kb[5];    // alt
-wire btn_1p_start = kb[6];    // 1
-wire btn_2p_start = kb[7];    // 2
-wire btn_coin1    = kb[8];    // 5
-wire btn_coin2    = kb[9];    // 6
-wire btn_service  = kb[10];   // 9
-wire btn_pause    = kb[12];   // P
+wire btn_up       = kb[0];
+wire btn_down     = kb[1];
+wire btn_left     = kb[2];
+wire btn_right    = kb[3];
+wire btn_fire     = kb[4];
+wire btn_fire2    = kb[5];
+wire btn_1p_start = kb[6];
+wire btn_2p_start = kb[7];
+wire btn_coin1    = kb[8];
+wire btn_coin2    = kb[9];
+wire btn_service  = kb[10];
+wire btn_pause    = kb[12];
 
-//////////////////  Arcade Buttons/Interfaces   ///////////////////////////
-
-//Player 1
 wire m_up1      = btn_up      | joystick_0[3];
 wire m_down1    = btn_down    | joystick_0[2];
 wire m_left1    = btn_left    | joystick_0[1];
@@ -230,7 +219,6 @@ wire m_right1   = btn_right   | joystick_0[0];
 wire m_fire1    = btn_fire    | joystick_0[4];
 wire m_fire1b   = btn_fire2   | joystick_0[5];
 
-//Player 2
 wire m_up2      = btn_up      | joystick_1[3];
 wire m_down2    = btn_down    | joystick_1[2];
 wire m_left2    = btn_left    | joystick_1[1];
@@ -238,14 +226,12 @@ wire m_right2   = btn_right   | joystick_1[0];
 wire m_fire2    = btn_fire    | joystick_1[4];
 wire m_fire2b   = btn_fire2   | joystick_0[5];
 
-//Start/coin
 wire m_start1   = btn_1p_start | joystick_0[6];
 wire m_start2   = btn_2p_start | joystick_0[7];
 wire m_coin1    = btn_coin1    | joystick_0[8];
 wire m_coin2    = btn_coin2;
 wire m_pause    = btn_pause    | joystick_0[9];
 
-// PAUSE SYSTEM
 wire [23:0] rgb_out;
 pause #(8,8,8,49) pause
 (
@@ -256,20 +242,16 @@ pause #(8,8,8,49) pause
 	.options(~status[26:25])
 );
 
-// DIP SWITCHES
-reg [7:0] dip_sw[8];	// Active-LOW
+reg [7:0] dip_sw[8];
 always @(posedge CLK_40M) begin
 	if(ioctl_wr && (ioctl_index==254) && !ioctl_addr[24:3])
 		dip_sw[ioctl_addr[2:0]] <= ioctl_dout;
 end
 
-///////////////                 Video                  ////////////////
-
 wire hblank, vblank;
 wire hs, vs;
 wire [4:0] r_out, g_out, b_out;
 
-// Scale 5-bit color to 8-bit for VGA output
 wire [7:0] bd_r = (r_out[0] ? 8'h19 : 8'h00) + 
                (r_out[1] ? 8'h24 : 8'h00) + 
                (r_out[2] ? 8'h35 : 8'h00) +
@@ -288,8 +270,6 @@ wire [7:0] bd_b = (b_out[0] ? 8'h19 : 8'h00) +
 wire ce_pix;
 wire bd_hs, bd_vs, bd_hblank, bd_vblank;
 
-// MAME artwork (ioctl index 5, OSD Artwork page): native composite on the core video (one pixel late),
-// full view through the DDR3 framebuffer on HDMI
 wire  [7:0] r, g, b;
 wire        art_run, art_ddr;
 wire [31:0] art_fb_base;
@@ -314,7 +294,6 @@ artwork #(.IDX(8'd5)) artwork
 	.DDRAM_DOUT(DDRAM_DOUT), .DDRAM_DOUT_READY(DDRAM_DOUT_READY), .DDRAM_RD(art_rd),
 	.DDRAM_DIN(art_din), .DDRAM_BE(art_be), .DDRAM_WE(art_we)
 );
-// Orientation Horz (rotated monitor): the artwork turns its own view, so it keeps the framebuffer
 assign art_fb = art_run & ~direct_video;
 
 wire rotate_ccw = 1;
@@ -338,7 +317,6 @@ screen_rotate screen_rotate
 	.DDRAM_BE(sr_be), .DDRAM_WE(sr_we), .DDRAM_RD(sr_rd)
 );
 
-// the artwork takes the framebuffer while it draws, and DDR3 while it loads or draws
 assign FB_EN     = art_fb | sr_fb_en;
 assign FB_FORMAT = art_fb ? 5'b00110  : sr_fb_format;
 assign FB_WIDTH  = art_fb ? art_cw    : sr_fb_w;
@@ -368,11 +346,9 @@ arcade_video #(256, 24) arcade_video
 	.fx(status[17:15])
 );
 
-// Assemble player control bytes for Blue Print (active HIGH)
 wire [7:0] p1_controls = {m_down1, m_up1, m_right1, m_left1, m_fire1, m_fire1b, m_start1, m_coin1};
 wire [7:0] p2_controls = {m_down2, m_up2, m_right2, m_left2, m_fire2, m_fire2b, m_start2, m_coin2};
 
-// Blue Print dispatcher (rtl/blueprint_dispatcher.sv)
 blueprint_dispatcher BP_inst
 (
 	.reset(~reset),
@@ -413,8 +389,6 @@ blueprint_dispatcher BP_inst
 	.hs_write(hs_write_enable)
 );
 
-// HISCORE SYSTEM
-// --------------
 wire [15:0]hs_address;
 wire [7:0] hs_data_in;
 wire [7:0] hs_data_out;

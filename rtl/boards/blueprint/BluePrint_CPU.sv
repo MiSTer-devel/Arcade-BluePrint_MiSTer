@@ -33,28 +33,21 @@ module BluePrint_CPU
 	output        video_hblank, video_vblank,
 	output        ce_pix,
 
-	// player controls, active high
 	input   [7:0] p1_controls,    // {coin, start2, start1, btn1, left, down, right, up}
 	input   [7:0] p2_controls,    // {3'b111, btn1, left, down, right, up}
 
-	input   [7:0] dipsw_readback, // from sound board AY1 port A
+	input   [7:0] dipsw_readback,
 
-	// sound command to the sound board
 	output  [7:0] sound_cmd,
 	output        sound_cmd_wr,
 
-	// OSD 180 degree flip, composed with the game's MASTER FLIP
 	input         crt_flip,
 
-	// Screen centering
 	input   [3:0] h_center, v_center,
 
-
-	// shared Z80 (pool slot z80_0, rtl/blueprint_dispatcher.sv)
 	output chip_pool_pkg::z80_i_t z80_0_i,
 	input  chip_pool_pkg::z80_o_t z80_0_o,
 
-	// shared ROM blocks (read ports, rtl/blueprint_dispatcher.sv)
 	output [11:0] rom_cpu_a,
 	input   [7:0] rom1_D, rom2_D, rom3_D, rom4_D, rom5_D, rom6_D,
 	output [11:0] rom_tile_a,
@@ -62,27 +55,21 @@ module BluePrint_CPU
 	output [11:0] rom_spr_a,
 	input   [7:0] spr_r_D, spr_b_D, spr_g_D,
 
-	// board RAM pool blocks 0-4: work (port B = hiscore), video, color, scroll, sprite
 	output ram_pool_pkg::pram_i_t [4:0] pr_i,
 	input  ram_pool_pkg::pram_o_t [4:0] pr_o,
 
 	input         pause,
 
-	// Hiscore interface
 	input  [15:0] hs_address,
 	input   [7:0] hs_data_in,
 	output  [7:0] hs_data_out,
 	input         hs_write
 );
 
-//------------------------------------------------------- Clock enables -------------------------------------------------------//
-
-// 5 MHz pixel = 40 / 8 (10 MHz XTAL / 2)
 reg [2:0] pix_div = 3'd0;
 always @(posedge clk_40m) pix_div <= pix_div + 3'd1;
 wire cen_5m = (pix_div == 3'd0);
 
-// 3.5 MHz CPU = 40 * 7 / 80 (7 MHz XTAL / 2)
 wire [1:0] cpu_cen_o;
 jtframe_frac_cen #(2) cpu_cen
 (
@@ -96,9 +83,6 @@ wire cen_3m5 = cpu_cen_o[0];
 
 assign ce_pix = cen_5m;
 
-//-------------------------------------------------------- Video timing --------------------------------------------------------//
-
-// 5 MHz dot clock: H 0-319, V 0-263, visible 256 x 224 (lines 16-239)
 reg [8:0] base_h_cnt = 9'd0;
 reg [8:0] v_cnt = 9'd0;
 always_ff @(posedge clk_40m) begin
@@ -113,13 +97,11 @@ end
 
 wire [8:0] h_cnt = (base_h_cnt <= 9'd248) ? base_h_cnt : 9'd248;
 
-// Blanking
 wire hblk = (base_h_cnt >= 9'd256);
 wire vblk = (v_cnt < 9'd16) | (v_cnt >= 9'd240);
 assign video_hblank = hblk;
 assign video_vblank = vblk;
 
-// Sync generation with screen centering offsets
 wire [8:0] hs_start = 9'd280 + {5'd0, h_center};
 wire [8:0] hs_end   = hs_start + 9'd32;
 wire [8:0] vs_start = 9'd248 + {5'd0, v_center};
@@ -128,9 +110,6 @@ assign video_hsync = (base_h_cnt >= hs_start && base_h_cnt < hs_end);
 assign video_vsync = (v_cnt >= vs_start && v_cnt < vs_end);
 assign video_csync = ~(video_hsync ^ video_vsync);
 
-//------------------------------------------------------------ CPU -------------------------------------------------------------//
-
-// Z80 bus (pool slot z80_0)
 wire [15:0] z80_A;
 wire [7:0] z80_Dout;
 wire n_mreq, n_iorq, n_rd, n_wr, n_rfsh, n_m1;
@@ -143,9 +122,6 @@ assign n_rd     = z80_0_o.rd_n;
 assign n_wr     = z80_0_o.wr_n;
 assign n_rfsh   = z80_0_o.rfsh_n;
 
-//--------------------------------------------------------- Interrupts ---------------------------------------------------------//
-
-// VBlank IRQ: set on the VBlank rising edge, held until the IORQ + M1 acknowledge
 reg n_irq = 1'b1;
 reg vblk_last = 1'b0;
 wire irq_ack = ~n_iorq & ~n_m1;
@@ -162,25 +138,19 @@ always_ff @(posedge clk_40m) begin
 	end
 end
 
-//------------------------------------------------------ Address decoding ------------------------------------------------------//
-
 wire mem_valid = ~n_mreq & n_rfsh;
-wire cs_rom    = mem_valid & ~z80_A[15] & (z80_A[14:13] != 2'b11); // 0x0000-0x5FFF
-wire cs_wram   = mem_valid & (z80_A[15:11] == 5'b10000);            // 0x8000-0x87FF
-wire cs_vram   = mem_valid & (z80_A[15:12] == 4'h9);                // 0x9000-0x9FFF
-wire cs_scroll = mem_valid & (z80_A[15:8]  == 8'hA0);               // 0xA000-0xA0FF
-wire cs_sprite = mem_valid & (z80_A[15:8]  == 8'hB0);               // 0xB000-0xB0FF
-wire cs_io_c   = mem_valid & (z80_A[15:12] == 4'hC);                // 0xC000-0xCFFF
-wire cs_sndcmd = mem_valid & (z80_A[15:12] == 4'hD) & ~n_wr;        // 0xD000 write
-wire cs_e000   = mem_valid & (z80_A[15:12] == 4'hE);                // 0xE000
-wire cs_cram   = mem_valid & (z80_A[15:12] == 4'hF);                // 0xF000-0xFFFF
+wire cs_rom    = mem_valid & ~z80_A[15] & (z80_A[14:13] != 2'b11);
+wire cs_wram   = mem_valid & (z80_A[15:11] == 5'b10000);
+wire cs_vram   = mem_valid & (z80_A[15:12] == 4'h9);
+wire cs_scroll = mem_valid & (z80_A[15:8]  == 8'hA0);
+wire cs_sprite = mem_valid & (z80_A[15:8]  == 8'hB0);
+wire cs_io_c   = mem_valid & (z80_A[15:12] == 4'hC);
+wire cs_sndcmd = mem_valid & (z80_A[15:12] == 4'hD) & ~n_wr;
+wire cs_e000   = mem_valid & (z80_A[15:12] == 4'hE);
+wire cs_cram   = mem_valid & (z80_A[15:12] == 4'hF);
 
-//------------------------------------------------------------ ROMs ------------------------------------------------------------//
-
-// Main program ROMs (5x 4KB)
 assign rom_cpu_a = z80_A[11:0];
 
-// ROM data mux based on address
 wire [7:0] rom_D = (z80_A[14:12] == 3'd0) ? rom1_D :
                    (z80_A[14:12] == 3'd1) ? rom2_D :
                    (z80_A[14:12] == 3'd2) ? rom3_D :
@@ -189,84 +159,71 @@ wire [7:0] rom_D = (z80_A[14:12] == 3'd0) ? rom1_D :
                    (z80_A[14:12] == 3'd5) ? rom6_D :
                    8'hFF;
 
-// Tile ROMs (2x 4KB) — addressed by rendering pipeline
 reg  [11:0] tile_render_addr;
 assign rom_tile_a = tile_render_addr;
 
-// Sprite ROMs (3x 4KB) — addressed by sprite scanner
 reg  [11:0] spr_render_addr;
 assign rom_spr_a = spr_render_addr;
 
-//-------------------------------------------------------------- RAM -----------------------------------------------------------//
-
-// board RAMs = pool blocks 0-4 in the dispatcher (same widths, same two ports)
 ram_pool_pkg::pram_i_t wram_i, vram_i, cram_i, scroll_i, sprite_i;
 ram_pool_pkg::pram_o_t wram_o, vram_o, cram_o, scroll_o, sprite_o;
 assign pr_i = {sprite_i, scroll_i, cram_i, vram_i, wram_i};
 assign {sprite_o, scroll_o, cram_o, vram_o, wram_o} = pr_o;
 
-// Work RAM (2KB, dual-port for hiscore)
 wire [7:0] wram_D;
-assign wram_i.a_addr = 15'(z80_A[10:0]);
+assign wram_i.a_addr = 16'(z80_A[10:0]);
 assign wram_i.a_d    = z80_Dout;
 assign wram_i.a_we   = cs_wram & ~n_wr;
-assign wram_i.b_addr = 15'(hs_address[10:0]);
+assign wram_i.b_addr = 16'(hs_address[10:0]);
 assign wram_i.b_d    = hs_data_in;
 assign wram_i.b_we   = hs_write;
 assign wram_D = wram_o.a_q;
 assign hs_data_out = wram_o.b_q;
 
-// Video RAM (1KB) — port A: CPU, port B: video rendering
 wire [7:0] vram_cpu_D, vram_render_D;
 reg  [9:0] vram_render_addr;
-assign vram_i.a_addr = 15'(z80_A[9:0]);
+assign vram_i.a_addr = 16'(z80_A[9:0]);
 assign vram_i.a_d    = z80_Dout;
 assign vram_i.a_we   = cs_vram & ~n_wr;
-assign vram_i.b_addr = 15'(vram_render_addr);
+assign vram_i.b_addr = 16'(vram_render_addr);
 assign vram_i.b_d    = 8'd0;
 assign vram_i.b_we   = 1'b0;
 assign vram_cpu_D = vram_o.a_q;
 assign vram_render_D = vram_o.b_q;
 
-// Color RAM (1KB) — port A: CPU, port B: video rendering
 wire [7:0] cram_cpu_D, cram_render_D;
 reg  [9:0] cram_render_addr;
-assign cram_i.a_addr = 15'(z80_A[9:0]);
+assign cram_i.a_addr = 16'(z80_A[9:0]);
 assign cram_i.a_d    = z80_Dout;
 assign cram_i.a_we   = cs_cram & ~n_wr;
-assign cram_i.b_addr = 15'(cram_render_addr);
+assign cram_i.b_addr = 16'(cram_render_addr);
 assign cram_i.b_d    = 8'd0;
 assign cram_i.b_we   = 1'b0;
 assign cram_cpu_D = cram_o.a_q;
 assign cram_render_D = cram_o.b_q;
 
-// Scroll RAM (256 bytes) — port A: CPU, port B: video rendering
 wire [7:0] scroll_cpu_D, scroll_render_D;
 reg  [7:0] scroll_render_addr;
-assign scroll_i.a_addr = 15'(z80_A[7:0]);
+assign scroll_i.a_addr = 16'(z80_A[7:0]);
 assign scroll_i.a_d    = z80_Dout;
 assign scroll_i.a_we   = cs_scroll & ~n_wr;
-assign scroll_i.b_addr = 15'(scroll_render_addr);
+assign scroll_i.b_addr = 16'(scroll_render_addr);
 assign scroll_i.b_d    = 8'd0;
 assign scroll_i.b_we   = 1'b0;
 assign scroll_cpu_D = scroll_o.a_q;
 assign scroll_render_D = scroll_o.b_q;
 
-// Sprite RAM (256 bytes) — port A: CPU, port B: sprite scanner
 wire [7:0] sprite_cpu_D, sprite_scan_D;
 reg  [7:0] sprite_scan_addr;
-assign sprite_i.a_addr = 15'(z80_A[7:0]);
+assign sprite_i.a_addr = 16'(z80_A[7:0]);
 assign sprite_i.a_d    = z80_Dout;
 assign sprite_i.a_we   = cs_sprite & ~n_wr;
-assign sprite_i.b_addr = 15'(sprite_scan_addr);
+assign sprite_i.b_addr = 16'(sprite_scan_addr);
 assign sprite_i.b_d    = 8'd0;
 assign sprite_i.b_we   = 1'b0;
 assign sprite_cpu_D = sprite_o.a_q;
 assign sprite_scan_D = sprite_o.b_q;
 
-//-------------------------------------------------------- I/O registers -------------------------------------------------------//
-
-// Flip screen and gfx_bank (0xE000 write)
 reg flip = 1'b0;
 reg gfx_bank = 1'b0;
 always_ff @(posedge clk_40m) begin
@@ -279,11 +236,8 @@ always_ff @(posedge clk_40m) begin
 	end
 end
 
-// MASTER FLIP (J4-34): one global signal XORed into the scan counters and the per-object flip bits;
-// the cocktail register and the OSD toggle compose, so two flips cancel.
 wire master_flip = flip ^ crt_flip;
 
-// Sound command (0xD000 write)
 reg [7:0] snd_cmd_reg = 8'd0;
 reg snd_cmd_wr_reg = 1'b0;
 always_ff @(posedge clk_40m) begin
@@ -296,8 +250,6 @@ end
 assign sound_cmd = snd_cmd_reg;
 assign sound_cmd_wr = snd_cmd_wr_reg;
 
-//---------------------------------------------------- CPU data input mux -----------------------------------------------------//
-
 wire [7:0] z80_Din = cs_rom                                ? rom_D :
                      (cs_wram & n_wr)                       ? wram_D :
                      (cs_vram & n_wr)                       ? vram_cpu_D :
@@ -309,36 +261,22 @@ wire [7:0] z80_Din = cs_rom                                ? rom_D :
                      (cs_io_c & ~n_rd & (z80_A[1:0] == 2'b11)) ? dipsw_readback :
                      8'hFF;
 
-// pool slot z80_0 inputs
 assign z80_0_i.ce    = cen_3m5 & ~pause;
 assign z80_0_i.int_n = n_irq;
 assign z80_0_i.nmi_n = 1'b1;
 assign z80_0_i.di    = z80_Din;
 
-//--- Tilemap rendering pipeline ---
-//
-// tile layout: column-major, X-flipped: tile_index = (31 - col) * 32 + row
-// VRAM/CRAM address: {(31 - screen_col), tile_row}  (column-major, X-flipped)
-//
-// Timeline (all on cen_5m):
-//   fine_x=0: Transfer pipe→shifts. Start fetch for current col: set scroll_render_addr.
-//   fine_x=1: Scroll data ready. Compute scrolled_y. Set vram/cram addr.
-//   fine_x=2: Wait for VRAM/CRAM.
-//   fine_x=3: VRAM/CRAM data ready. Compute tile ROM addr. Update prev_bank_bit.
-//   fine_x=4: Tile ROM data ready. Latch into pipe_tile0/pipe_tile1.
-//   fine_x=5,6,7: Shift pixels out (MSB first).
+reg [7:0] tile_shift0, tile_shift1;
+reg [6:0] tile_color_latch;
+reg       tile_priority_latch;
+reg       prev_bank_bit;
+reg [4:0] latched_col;
+reg [7:0] pipe_tile0, pipe_tile1;
+reg [6:0] pipe_color;
+reg       pipe_priority;
+reg [2:0] pipe_fine_y;
 
-reg [7:0] tile_shift0, tile_shift1;   // Active shift registers (bit7 = current pixel)
-reg [6:0] tile_color_latch;           // Color byte latched for active column
-reg       tile_priority_latch;        // Priority bit for active column
-reg       prev_bank_bit;              // cram[6] from previous column (bank quirk)
-reg [4:0] latched_col;               // screen_col captured at fine_x=0
-reg [7:0] pipe_tile0, pipe_tile1;    // Pre-fetched tile ROM bytes
-reg [6:0] pipe_color;                // Pre-fetched color byte
-reg       pipe_priority;             // Pre-fetched priority bit
-reg [2:0] pipe_fine_y;              // Fine Y for ROM address
-
-// Tile pixels leave the shifter MSB-first, so a flipped column loads reversed.
+// tile pixels shift out MSB-first, so a flipped column loads reversed
 wire [7:0] pipe_tile0_rev = {pipe_tile0[0], pipe_tile0[1], pipe_tile0[2], pipe_tile0[3],
                              pipe_tile0[4], pipe_tile0[5], pipe_tile0[6], pipe_tile0[7]};
 wire [7:0] pipe_tile1_rev = {pipe_tile1[0], pipe_tile1[1], pipe_tile1[2], pipe_tile1[3],
@@ -348,13 +286,8 @@ wire [4:0] screen_col  = h_cnt[7:3];
 wire [2:0] fine_x      = h_cnt[2:0];
 wire [7:0] screen_y    = v_cnt[7:0];
 
-// MASTER FLIP inverts the address counters (fine_x stays raw: it is the fetch schedule). Both visible
-// spans are symmetric about 127.5, so a bare inversion maps each onto itself; the reversed fetch order
-// also makes the previous-column bank bit read the other neighbour, as the board does.
-// flip mirror-centre corrections, measured on hardware. They act in OPPOSITE directions: FLIP_COL_ADJ
-// subtracts from a fetch address (raising it moves tiles one way), FLIP_SPR_ADJ from a write position.
-localparam [4:0] FLIP_COL_ADJ = 5'd3;    // tilemap, in tile columns (24px)
-localparam [7:0] FLIP_SPR_ADJ = 8'd12;   // sprites, in pixels
+localparam [4:0] FLIP_COL_ADJ = 5'd3;
+localparam [7:0] FLIP_SPR_ADJ = 8'd12;
 wire [4:0] eff_col = master_flip ? ((~screen_col) - FLIP_COL_ADJ) : screen_col;
 wire [7:0] eff_y   = master_flip ? ~screen_y   : screen_y;
 wire visible_line = (v_cnt >= 9'd16) && (v_cnt < 9'd240);
@@ -381,25 +314,20 @@ always_ff @(posedge clk_40m) begin
 		end else begin
 			case (fine_x)
 
-				// fine_x=0: Transfer pipe to shift registers.
-				//           Begin fetch for current column.
 				3'd0: begin
 					tile_shift0         <= master_flip ? pipe_tile0_rev : pipe_tile0;
 					tile_shift1         <= master_flip ? pipe_tile1_rev : pipe_tile1;
 					tile_color_latch    <= pipe_color;
 					tile_priority_latch <= pipe_priority;
 					latched_col         <= eff_col;
-					// scroll_ram[(30 - scr_col) & 0xFF]
 					scroll_render_addr  <= 8'd30 - {3'd0, eff_col};
 				end
 
-				// fine_x=1: Scroll data ready. Compute scrolled Y, set VRAM/CRAM addr.
 				3'd1: begin
 					begin
 						reg [7:0] scrolled_y;
 						scrolled_y       = eff_y + scroll_render_D;
 						pipe_fine_y      <= scrolled_y[2:0];
-						// VRAM col 0 = rightmost screen column
 						vram_render_addr <= {(5'd30 - latched_col), scrolled_y[7:3]};
 						cram_render_addr <= {(5'd30 - latched_col), scrolled_y[7:3]};
 					end
@@ -407,24 +335,20 @@ always_ff @(posedge clk_40m) begin
 					tile_shift1 <= {tile_shift1[6:0], 1'b0};
 				end
 
-				// fine_x=2: Wait for VRAM/CRAM output to settle.
 				3'd2: begin
 					tile_shift0 <= {tile_shift0[6:0], 1'b0};
 					tile_shift1 <= {tile_shift1[6:0], 1'b0};
 				end
 
-				// fine_x=3: VRAM/CRAM data ready. Compute tile ROM address.
 				3'd3: begin
 					pipe_color       <= cram_render_D[6:0];
 					pipe_priority    <= cram_render_D[7];
-					// Bank bit from PREVIOUS column's cram[6], gated by gfx_bank register
 					tile_render_addr <= {prev_bank_bit & gfx_bank, vram_render_D, pipe_fine_y};
 					prev_bank_bit    <= cram_render_D[6];
 					tile_shift0      <= {tile_shift0[6:0], 1'b0};
 					tile_shift1      <= {tile_shift1[6:0], 1'b0};
 				end
 
-				// fine_x=4: Tile ROM data ready. Latch into pipe.
 				3'd4: begin
 					pipe_tile0  <= tile0_D;
 					pipe_tile1  <= tile1_D;
@@ -432,7 +356,6 @@ always_ff @(posedge clk_40m) begin
 					tile_shift1 <= {tile_shift1[6:0], 1'b0};
 				end
 
-				// fine_x=5,6,7: Shift only.
 				default: begin
 					tile_shift0 <= {tile_shift0[6:0], 1'b0};
 					tile_shift1 <= {tile_shift1[6:0], 1'b0};
@@ -443,15 +366,11 @@ always_ff @(posedge clk_40m) begin
 	end
 end
 
-//--- Tile palette computation ---
-// Shift left, MSB out first: tile_shift[7] = current pixel bit.
-// Color bits are RBG order: cram bit0=R, bit1=B, bit2=G.
-
 wire [1:0] tile_pixel     = {tile_shift1[7], tile_shift0[7]};
 wire       tile_transparent = (tile_pixel == 2'b00);
 wire       tile_intensity   = tile_color_latch[6];
-wire [2:0] color_lo         = tile_color_latch[2:0]; // RBG for pixel==01
-wire [2:0] color_hi         = tile_color_latch[5:3]; // RBG for pixel==10
+wire [2:0] color_lo         = tile_color_latch[2:0];
+wire [2:0] color_hi         = tile_color_latch[5:3];
 
 wire [2:0] pen_rbg = (tile_pixel == 2'b01) ? color_lo :
                      (tile_pixel == 2'b10) ? color_hi :
@@ -462,13 +381,10 @@ wire [4:0] r_tile = pen_rbg[0] ? (tile_intensity ? 5'd24 : 5'd31) : 5'd0;
 wire [4:0] g_tile = pen_rbg[2] ? (tile_intensity ? 5'd24 : 5'd31) : 5'd0;
 wire [4:0] b_tile = pen_rbg[1] ? (tile_intensity ? 5'd24 : 5'd31) : 5'd0;
 
-//--- Sprite line buffers (double-buffered, 256×3-bit, 0 = transparent) ---
-
 reg [2:0] linebuf0 [0:255];
 reg [2:0] linebuf1 [0:255];
-reg       linebuf_sel = 1'b0; // 0: display buf0/write buf1; 1: display buf1/write buf0
+reg       linebuf_sel = 1'b0;
 
-// Swap at the start of each active line
 always_ff @(posedge clk_40m) begin
 	if (!reset)
 		linebuf_sel <= 1'b0;
@@ -476,21 +392,17 @@ always_ff @(posedge clk_40m) begin
 		linebuf_sel <= ~linebuf_sel;
 end
 
-//--- Sprite scanner state machine (runs at clk_40m during HBlank) ---
-// Sprites are 8×16. ROM address: {tile_code[7:0], line_in_sprite[3:0]}.
-// flipY for sprite N comes from sprite N-1's byte2[7] (previous-sprite quirk).
-
 reg [3:0] spr_state;
 reg [5:0] spr_idx;
-reg [7:0] spr_byte0;          // Y position
-reg [7:0] spr_byte1;          // Tile code
-reg [7:0] spr_byte2;          // Flags: bit6=flipX, bit7=NEXT sprite's flipY
-reg [7:0] spr_byte3;          // X position
-reg       spr_flipy;          // flipY for current sprite (from previous sprite's byte2[7])
-reg       prev_sprite_flipy;  // Carry flipY forward
+reg [7:0] spr_byte0;
+reg [7:0] spr_byte1;
+reg [7:0] spr_byte2;
+reg [7:0] spr_byte3;
+reg       spr_flipy;
+reg       prev_sprite_flipy;
 reg [7:0] spr_rom_r_lat, spr_rom_b_lat, spr_rom_g_lat;
 reg [2:0] spr_pix_cnt;
-reg [7:0] next_scanline;      // v_cnt of the line being prepared
+reg [7:0] next_scanline;
 
 localparam SPR_IDLE     = 4'd0;
 localparam SPR_INIT_RD  = 4'd2;
@@ -528,49 +440,42 @@ always_ff @(posedge clk_40m) begin
 			SPR_INIT_LAT: begin
 				prev_sprite_flipy <= sprite_scan_D[7];
 				spr_idx           <= 6'd0;
-				sprite_scan_addr  <= 8'd0; // sprite 0, byte 0
+				sprite_scan_addr  <= 8'd0;
 				spr_state         <= SPR_RD_B0;
 			end
 
 			SPR_RD_B0: begin
-				// RAM address already set; request byte 1 for next cycle
 				sprite_scan_addr <= {spr_idx, 2'd1};
 				spr_state        <= SPR_RD_B1;
 			end
 
 			SPR_RD_B1: begin
-				// byte 0 (Y) now on bus; request byte 2
 				spr_byte0        <= sprite_scan_D;
 				sprite_scan_addr <= {spr_idx, 2'd2};
 				spr_state        <= SPR_RD_B2;
 			end
 
 			SPR_RD_B2: begin
-				// byte 1 (tile code) now on bus; request byte 3
 				spr_byte1        <= sprite_scan_D;
 				sprite_scan_addr <= {spr_idx, 2'd3};
 				spr_state        <= SPR_RD_B3;
 			end
 
 			SPR_RD_B3: begin
-				// byte 2 (flags) now on bus
 				spr_byte2 <= sprite_scan_D;
 				spr_flipy <= prev_sprite_flipy;
 				spr_state <= SPR_ROMADDR;
 			end
 
 			SPR_ROMADDR: begin
-				// byte 3 (X) now on bus
 				spr_byte3         <= sprite_scan_D;
 				prev_sprite_flipy <= spr_byte2[7];
 				begin
 					reg [8:0] raw_line;
-					// line_in_sprite = next_scanline - (sy - 1) = next_scanline - 239 + byte0
-					// MASTER FLIP: sy = 240 - sy, so the subtrahend becomes byte0 - 1
 					raw_line = master_flip ? ({1'b0, next_scanline} - {1'b0, spr_byte0} + 9'd1)
 					                       : ({1'b0, next_scanline} - 9'd239 + {1'b0, spr_byte0});
 					if (raw_line[8] || raw_line[7:4] != 4'd0) begin
-						spr_state <= SPR_NEXT; // not on this scanline
+						spr_state <= SPR_NEXT;
 					end else begin
 						reg [3:0] line_in_sprite;
 						line_in_sprite  = (spr_flipy ^ master_flip) ? (4'd15 - raw_line[3:0]) : raw_line[3:0];
@@ -598,10 +503,8 @@ always_ff @(posedge clk_40m) begin
 					reg [2:0] pixel_val;
 					reg [7:0] x_pos;
 					reg [7:0] x_base;
-					// flipX: bit0 first (pixel 0 = LSB); normal: bit7 first (pixel 0 = MSB)
 					bit_pos   = (spr_byte2[6] ^ master_flip) ? spr_pix_cnt : (3'd7 - spr_pix_cnt);
 					pixel_val = {spr_rom_g_lat[bit_pos], spr_rom_b_lat[bit_pos], spr_rom_r_lat[bit_pos]};
-					// MASTER FLIP: sx = 248 - sx
 					x_base    = master_flip ? (8'd248 - spr_byte3 - FLIP_SPR_ADJ) : spr_byte3;
 					x_pos     = x_base + {5'd0, spr_pix_cnt} + 8'd0;
 					if (pixel_val != 3'd0) begin
@@ -632,11 +535,8 @@ always_ff @(posedge clk_40m) begin
 	end
 end
 
-//--- Sprite pixel readout ---
-
 wire [2:0] sprite_pixel       = linebuf_sel ? linebuf1[h_cnt[7:0] - 8'd3] : linebuf0[h_cnt[7:0] - 8'd3];
 
-// Clear display buffer as we read (becomes write buffer next line)
 always_ff @(posedge clk_40m) begin
     if (cen_5m && visible_line) begin
         if (linebuf_sel)
@@ -648,12 +548,9 @@ end
 
 wire       sprite_transparent = (sprite_pixel == 3'b000);
 
-// Sprite pixel bits: bit0=R, bit1=B, bit2=G (full brightness only)
 wire [4:0] r_sprite = sprite_pixel[0] ? 5'd31 : 5'd0;
 wire [4:0] g_sprite = sprite_pixel[2] ? 5'd31 : 5'd0;
 wire [4:0] b_sprite = sprite_pixel[1] ? 5'd31 : 5'd0;
-
-//--- Compositing: priority-1 tiles > sprites > priority-0 tiles > black ---
 
 wire [4:0] r_final = (tile_priority_latch && !tile_transparent) ? r_tile :
                      (!sprite_transparent)                       ? r_sprite :
